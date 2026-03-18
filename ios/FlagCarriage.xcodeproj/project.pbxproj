@@ -1,0 +1,4 @@
+// This is a placeholder — open Xcode and create a new SwiftUI project named FlagCarriage,
+// then replace/add the Swift files from the ios/FlagCarriage/ folder.
+// Target: iOS 16+, SwiftUI lifecycle.
+// No external dependencies required — uses URLSessionWebSocketTask for WebSocket.
