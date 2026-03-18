@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ConnectView: View {
     @EnvironmentObject var connection: ConnectionManager
-    @State private var editingIP = ""
     @State private var showModeHelp = false
 
     var body: some View {
@@ -60,8 +59,7 @@ struct ConnectView: View {
                         } label: {
                             HStack {
                                 Spacer()
-                                Text("Disconnect")
-                                    .fontWeight(.semibold)
+                                Text("Disconnect").fontWeight(.semibold)
                                 Spacer()
                             }
                         }
@@ -95,7 +93,7 @@ struct ConnectView: View {
                 if connection.isConnected {
                     Section {
                         StatusRow(label: "Direction", value: directionLabel)
-                        StatusRow(label: "Speed",     value: "\(Int(Double(connection.lastStatus.speed)/255*100))%")
+                        StatusRow(label: "Speed",     value: "\(Int(Double(connection.lastStatus.speed) / 255 * 100))%")
                         StatusRow(label: "Limit A",   value: connection.lastStatus.limitA ? "TRIGGERED" : "Clear",
                                   valueColor: connection.lastStatus.limitA ? .red : .green)
                         StatusRow(label: "Limit B",   value: connection.lastStatus.limitB ? "TRIGGERED" : "Clear",
@@ -109,15 +107,15 @@ struct ConnectView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             ModeHelpRow(
                                 title: "AP Mode (Hotspot)",
-                                body: "Set config.h WIFI_MODE to WIFI_MODE_AP. ESP creates \"FlagCarriage\" network. Connect iPhone to that network. IP is always 192.168.4.1."
+                                description: "Set config.h WIFI_MODE to WIFI_MODE_AP. ESP creates \"FlagCarriage\" network. Connect iPhone to that network. IP is always 192.168.4.1."
                             )
                             ModeHelpRow(
                                 title: "STA Mode (Router)",
-                                body: "Set config.h WIFI_MODE to WIFI_MODE_STA with your credentials. Open Serial Monitor at 115200 baud — ESP prints its IP on startup."
+                                description: "Set config.h WIFI_MODE to WIFI_MODE_STA with your credentials. Open Serial Monitor at 115200 baud — ESP prints its IP on startup."
                             )
                             ModeHelpRow(
                                 title: "iPhone Hotspot",
-                                body: "Set STA mode with your iPhone hotspot name/password. In Settings > Personal Hotspot, check connected devices to find the IP."
+                                description: "Set STA mode with your iPhone hotspot name/password. In Settings > Personal Hotspot, check connected devices to find the IP."
                             )
                         }
                         .padding(.top, 4)
@@ -137,10 +135,13 @@ struct ConnectView: View {
     }
 }
 
+// MARK: - Supporting Views
+
 struct StatusRow: View {
     let label: String
     let value: String
     var valueColor: Color = .primary
+
     var body: some View {
         HStack {
             Text(label).foregroundColor(.secondary)
@@ -152,12 +153,16 @@ struct StatusRow: View {
 
 struct ModeHelpRow: View {
     let title: String
-    let body: String
-    var body_: some View {
+    let description: String   // renamed from 'body' to avoid conflict with SwiftUI View.body
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).fontWeight(.semibold).font(.subheadline)
-            Text(body).font(.caption).foregroundColor(.secondary)
+            Text(title)
+                .fontWeight(.semibold)
+                .font(.subheadline)
+            Text(description)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
-    var body: some View { body_ }
 }
