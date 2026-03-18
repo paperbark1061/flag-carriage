@@ -1,46 +1,67 @@
 /*
- * Flag Carriage — Arduino Bluetooth Motor Controller
- * ====================================================
+ * Flag Carriage — Arduino Nano Bluetooth Motor Controller
+ * ========================================================
  * Hardware:
- *   - Arduino Micro (or Nano / Uno)
- *   - HC-05 or HM-10 Bluetooth module
- *   - L298N or L9110S motor driver
- *   - 12V DC gear motor (100RPM)
+ *   - Arduino Nano (ATmega328P)
+ *   - HM-10 BLE module (recommended for iPhone)
+ *     OR HC-05 Classic Bluetooth (Android only)
+ *   - L298N dual H-bridge motor driver
+ *   - 12V DC gear motor (100RPM, >=20kg.cm torque)
  *   - Optional: limit switches at each end of rope
  *
- * Bluetooth command protocol (single char or short string):
- *   'F'  — Forward (motor drives carriage one way)
- *   'B'  — Backward (reverse)
- *   'S'  — Stop
- *   '0'..'9' — Speed 0–100% (mapped to PWM 0–255)
- *   'A'  — Auto mode (back and forth between limit switches)
- *   'M'  — Manual mode
+ * IMPORTANT — Arduino Nano vs Micro:
+ *   The Nano has only ONE hardware serial port (pins 0/1),
+ *   which is shared with the USB/PC connection.
+ *   Bluetooth MUST use SoftwareSerial on D10 (RX) / D11 (TX).
+ *   Do NOT connect BT module while uploading sketch via USB.
  *
  * Wiring:
- *   HC-05/HM-10 TX  -> Arduino RX1 (pin 0)
- *   HC-05/HM-10 RX  -> Arduino TX1 (pin 1) via voltage divider if 5V module
- *   L298N IN1       -> Arduino pin 6
- *   L298N IN2       -> Arduino pin 7
- *   L298N ENA (PWM) -> Arduino pin 5
- *   Limit switch A  -> Arduino pin 2 (INPUT_PULLUP)
- *   Limit switch B  -> Arduino pin 3 (INPUT_PULLUP)
- *   L298N 12V       -> 12V battery
- *   L298N GND       -> Common GND (battery + Arduino)
- *   L298N 5V out    -> Arduino 5V (if no separate power)
+ *   HM-10/HC-05 TX  -> Nano D10  (SoftwareSerial RX)
+ *   HM-10/HC-05 RX  -> Nano D11  (SoftwareSerial TX)
+ *                       * HC-05 RX needs voltage divider: 1k + 2k
+ *                       * HM-10 is 3.3V — use Nano 3.3V pin for VCC
+ *   L298N IN1        -> Nano D6
+ *   L298N IN2        -> Nano D7
+ *   L298N ENA (PWM)  -> Nano D5
+ *   Limit switch A   -> Nano D2  (INPUT_PULLUP, other leg to GND)
+ *   Limit switch B   -> Nano D3  (INPUT_PULLUP, other leg to GND)
+ *   L298N 12V        -> 12V battery positive
+ *   L298N GND        -> Common GND (battery GND + Nano GND)
+ *   L298N 5V out     -> Nano 5V pin  (powers Nano from L298N reg)
+ *   HM-10 VCC        -> Nano 3.3V
+ *   HM-10 GND        -> Nano GND
+ *
+ * Bluetooth command protocol:
+ *   'F'       — Forward
+ *   'B'       — Backward
+ *   'S'       — Stop
+ *   'A'       — Auto mode (bounces between limit switches)
+ *   'M'       — Manual mode
+ *   'SPD:nnn' — Set speed, nnn = 0-255 PWM value
+ *   '0'..'9'  — Speed presets (0=stop, 9=full speed)
+ *
+ * Arduino replies with: STATUS:F,SPD:200,LA:0,LB:0
  */
 
+#include <SoftwareSerial.h>
+
+// ── SoftwareSerial for Bluetooth ─────────────────────────────────
+// D10 = BT TX -> Nano RX
+// D11 = BT RX <- Nano TX
+SoftwareSerial btSerial(10, 11);  // RX, TX
+
 // ── Pin definitions ──────────────────────────────────────────────
-const int PIN_IN1       = 6;    // Motor direction A
-const int PIN_IN2       = 7;    // Motor direction B
-const int PIN_ENA       = 5;    // PWM speed (ENA on L298N)
-const int PIN_LIMIT_A   = 2;    // Limit switch — end A
-const int PIN_LIMIT_B   = 3;    // Limit switch — end B
+const int PIN_IN1     = 6;   // L298N IN1 — motor direction A
+const int PIN_IN2     = 7;   // L298N IN2 — motor direction B
+const int PIN_ENA     = 5;   // L298N ENA — PWM speed control
+const int PIN_LIMIT_A = 2;   // Limit switch — rope end A
+const int PIN_LIMIT_B = 3;   // Limit switch — rope end B
 
 // ── State ────────────────────────────────────────────────────────
 enum Direction { DIR_STOP, DIR_FORWARD, DIR_BACKWARD };
 
 Direction currentDir   = DIR_STOP;
-int       currentSpeed = 200;     // PWM 0–255 (default ~78%)
+int       currentSpeed = 200;    // PWM 0-255 (default ~78%)
 bool      autoMode     = false;
 bool      limitA       = false;
 bool      limitB       = false;
@@ -53,34 +74,33 @@ void setup() {
   pinMode(PIN_LIMIT_A, INPUT_PULLUP);
   pinMode(PIN_LIMIT_B, INPUT_PULLUP);
 
-  // Hardware serial for Bluetooth (RX0/TX1 on Arduino Micro)
-  Serial1.begin(9600);   // HC-05 default baud; HM-10 uses 9600 too
-  Serial.begin(115200);  // USB serial for debug
+  Serial.begin(115200);     // USB / debug monitor
+  btSerial.begin(9600);     // BT module (HM-10 and HC-05 default to 9600)
 
   motorStop();
-  Serial.println("Flag Carriage Ready");
-  Serial1.println("FLAG_CARRIAGE_READY");
+  Serial.println(F("Flag Carriage Nano Ready"));
+  btSerial.println(F("FLAG_CARRIAGE_READY"));
 }
 
 // ── Main loop ────────────────────────────────────────────────────
 void loop() {
-  // Read limit switches (LOW = triggered, due to INPUT_PULLUP)
+  // Read limit switches (LOW = triggered — INPUT_PULLUP)
   limitA = (digitalRead(PIN_LIMIT_A) == LOW);
   limitB = (digitalRead(PIN_LIMIT_B) == LOW);
 
-  // Auto-reverse mode
+  // Auto-bounce mode
   if (autoMode) {
     runAutoMode();
   }
 
   // Handle incoming Bluetooth commands
-  if (Serial1.available()) {
-    String cmd = Serial1.readStringUntil('\n');
+  if (btSerial.available()) {
+    String cmd = btSerial.readStringUntil('\n');
     cmd.trim();
     handleCommand(cmd);
   }
 
-  // Safety: stop if limit hit while in manual mode
+  // Safety: stop if limit hit in manual mode
   if (!autoMode) {
     if (currentDir == DIR_FORWARD  && limitB) motorStop();
     if (currentDir == DIR_BACKWARD && limitA) motorStop();
@@ -91,7 +111,7 @@ void loop() {
 void handleCommand(String cmd) {
   if (cmd.length() == 0) return;
 
-  Serial.print("CMD: "); Serial.println(cmd);
+  Serial.print(F("CMD: ")); Serial.println(cmd);
 
   char c = cmd.charAt(0);
 
@@ -116,29 +136,27 @@ void handleCommand(String cmd) {
 
     case 'A':
       autoMode = true;
-      Serial.println("Auto mode ON");
-      Serial1.println("MODE:AUTO");
+      Serial.println(F("Auto mode ON"));
+      btSerial.println(F("MODE:AUTO"));
       break;
 
     case 'M':
       autoMode = false;
       motorStop();
-      Serial.println("Manual mode");
-      Serial1.println("MODE:MANUAL");
+      Serial.println(F("Manual mode"));
+      btSerial.println(F("MODE:MANUAL"));
       break;
 
-    // Speed: "SPD:150" sets PWM to 150 (0-255)
-    // Or single digit 0-9 maps to 0-100%
     default:
       if (cmd.startsWith("SPD:")) {
+        // e.g. "SPD:180" — set PWM directly
         int spd = cmd.substring(4).toInt();
-        spd = constrain(spd, 0, 255);
-        currentSpeed = spd;
+        currentSpeed = constrain(spd, 0, 255);
         analogWrite(PIN_ENA, currentSpeed);
-        Serial.print("Speed set: "); Serial.println(currentSpeed);
-        Serial1.print("SPD:"); Serial1.println(currentSpeed);
+        Serial.print(F("Speed: ")); Serial.println(currentSpeed);
+        btSerial.print(F("SPD:")); btSerial.println(currentSpeed);
       } else if (c >= '0' && c <= '9') {
-        // Single digit 0-9 → speed percentage
+        // Single digit preset: 0=0%, 9=100%
         int pct = (c - '0') * 100 / 9;
         currentSpeed = map(pct, 0, 100, 0, 255);
         analogWrite(PIN_ENA, currentSpeed);
@@ -151,7 +169,6 @@ void handleCommand(String cmd) {
 // ── Auto mode: bounce between limit switches ─────────────────────
 void runAutoMode() {
   if (currentDir == DIR_STOP) {
-    // Start moving forward
     motorForward();
   }
   if (currentDir == DIR_FORWARD && limitB) {
@@ -164,13 +181,13 @@ void runAutoMode() {
   }
 }
 
-// ── Motor control helpers ────────────────────────────────────────
+// ── Motor helpers ────────────────────────────────────────────────
 void motorForward() {
   currentDir = DIR_FORWARD;
   digitalWrite(PIN_IN1, HIGH);
   digitalWrite(PIN_IN2, LOW);
   analogWrite(PIN_ENA, currentSpeed);
-  Serial.println(">> FORWARD");
+  Serial.println(F(">> FORWARD"));
 }
 
 void motorBackward() {
@@ -178,7 +195,7 @@ void motorBackward() {
   digitalWrite(PIN_IN1, LOW);
   digitalWrite(PIN_IN2, HIGH);
   analogWrite(PIN_ENA, currentSpeed);
-  Serial.println(">> BACKWARD");
+  Serial.println(F(">> BACKWARD"));
 }
 
 void motorStop() {
@@ -186,7 +203,7 @@ void motorStop() {
   digitalWrite(PIN_IN1, LOW);
   digitalWrite(PIN_IN2, LOW);
   analogWrite(PIN_ENA, 0);
-  Serial.println(">> STOP");
+  Serial.println(F(">> STOP"));
 }
 
 // ── Status broadcast ─────────────────────────────────────────────
@@ -200,6 +217,6 @@ void sendStatus() {
   status += limitA ? "1" : "0";
   status += ",LB:";
   status += limitB ? "1" : "0";
-  Serial1.println(status);
+  btSerial.println(status);
   Serial.println(status);
 }
